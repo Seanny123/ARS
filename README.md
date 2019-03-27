@@ -13,7 +13,11 @@ To install Ray execute:
 ``` 
 pip install ray
 ```
-For more information on Ray see http://ray.readthedocs.io/en/latest/. 
+For more information on Ray see http://ray.readthedocs.io/en/latest/.
+
+### Non Mujoco Tasks
+
+ARS works amazingly at `MountainCarContinuous-v0`, but seems to learn very slowly at `Pendulum-v0`. It seems to work adequately at `BipedalWalker-v2`.
 
 ## Running ARS
 
@@ -34,14 +38,14 @@ export MKL_NUM_THREADS=1
 To train a policy for HalfCheetah-v1, execute the following command: 
 
 ```
-python code/ars.py
+python arsrl/ars.py
 ```
 
 All arguments passed into ARS are optional and can be modified to train other environments, use different hyperparameters, or use  different random seeds.
 For example, to train a policy for Humanoid-v1, execute the following command:
 
 ```
-python code/ars.py --env_name Humanoid-v1 --n_directions 230 --deltas_used 230 --step_size 0.02 --delta_std 0.0075 --n_workers 48 --shift 5
+python arsrl/ars.py --env_name Humanoid-v1 --n_directions 230 --deltas_used 230 --step_size 0.02 --delta_std 0.0075 --n_workers 48 --shift 5
 ```
 
 ## Rendering Trained Policy
@@ -49,11 +53,11 @@ python code/ars.py --env_name Humanoid-v1 --n_directions 230 --deltas_used 230 -
 To render a trained policy, execute a command of the following form:
 
 ```
-python code/run_policy.py trained_polices/env_name/policy_directory_path/policy_file_name.npz env_name --render
+python arsrl/run_policy.py trained_polices/env_name/policy_directory_path/policy_file_name.npz env_name --render
 ```
 
 For example, to render Humanoid-v1 with a galloping gait execute:
 
 ```
-python code/run_policy.py trained_policies/Humanoid-v1/policy_reward_11600/lin_policy_plus.npz Humanoid-v1 --render 
+python arsrl/run_policy.py trained_policies/Humanoid-v1/policy_reward_11600/lin_policy_plus.npz Humanoid-v1 --render 
 ```
