@@ -3,17 +3,21 @@
 
 import numpy as np
 
+
 def itergroups(items, group_size):
     assert group_size >= 1
+
     group = []
+
     for x in items:
         group.append(x)
+
         if len(group) == group_size:
             yield tuple(group)
             del group[:]
+
     if group:
         yield tuple(group)
-
 
 
 def batched_weighted_sum(weights, vecs, batch_size):
@@ -25,4 +29,5 @@ def batched_weighted_sum(weights, vecs, batch_size):
         total += np.dot(np.asarray(batch_weights, dtype=np.float64),
                         np.asarray(batch_vecs, dtype=np.float64))
         num_items_summed += len(batch_weights)
+
     return total, num_items_summed

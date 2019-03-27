@@ -2,10 +2,6 @@
 # https://github.com/ray-project/ray/blob/master/python/ray/rllib/utils/filter.py
 
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 
@@ -66,7 +62,6 @@ class NoFilter(Filter):
         return 1
 
 
-
 # http://www.johndcook.com/blog/standard_deviation/
 class RunningStat(object):
 
@@ -97,7 +92,6 @@ class RunningStat(object):
             deltaM2 = np.square(x) - self._M2
             self._M[...] += delta / self._n
             self._S[...] += delta * delta * n1 / self._n
-            
 
     def update(self, other):
         n1 = self._n
@@ -170,7 +164,7 @@ class MeanStdFilter(Filter):
         self.rs.update(other.buffer)
         if copy_buffer:
             self.buffer = other.buffer.copy()
-        return 
+        return
 
     def copy(self):
         """Returns a copy of Filter."""
@@ -217,10 +211,10 @@ class MeanStdFilter(Filter):
         self.mean = self.rs.mean
         self.std = self.rs.std
 
-        # Set values for std less than 1e-7 to +inf to avoid 
+        # Set values for std less than 1e-7 to +inf to avoid
         # dividing by zero. State elements with zero variance
-        # are set to zero as a result. 
-        self.std[self.std < 1e-7] = float("inf") 
+        # are set to zero as a result.
+        self.std[self.std < 1e-7] = float("inf")
         return
 
     def get_stats(self):
@@ -231,7 +225,7 @@ class MeanStdFilter(Filter):
             self.shape, self.demean,
             self.rs, self.buffer)
 
-    
+
 def get_filter(filter_config, shape = None):
     if filter_config == "MeanStdFilter":
         return MeanStdFilter(shape)

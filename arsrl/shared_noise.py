@@ -4,10 +4,11 @@
 import ray
 import numpy as np
 
+
 @ray.remote
 def create_shared_noise():
     """
-    Create a large array of noise to be shared by all workers. Used 
+    Create a large array of noise to be shared by all workers. Used
     for avoiding the communication of the random perturbations delta.
     """
 
@@ -18,7 +19,7 @@ def create_shared_noise():
 
 
 class SharedNoiseTable(object):
-    def __init__(self, noise, seed = 11):
+    def __init__(self, noise, seed=11):
 
         self.rg = np.random.RandomState(seed)
         self.noise = noise

@@ -5,6 +5,8 @@ Example usage:
     python run_policy.py ../trained_policies/Humanoid-v1/policy_reward_11600/lin_policy_plus.npz Humanoid-v1 --render \
             --num_rollouts 20
 """
+
+
 import numpy as np
 import gym
 
@@ -44,7 +46,6 @@ def main():
             observations.append(obs)
             actions.append(action)
 
-
             obs, r, done, _ = env.step(action)
             totalr += r
             steps += 1
@@ -58,6 +59,7 @@ def main():
     print('returns', returns)
     print('mean return', np.mean(returns))
     print('std of return', np.std(returns))
+
 
 if __name__ == '__main__':
     main()

@@ -1,4 +1,4 @@
-# Code in this file is copied and adapted from 
+# Code in this file is copied and adapted from
 # https://github.com/berkeleydeeprlcourse
 
 import json
@@ -13,7 +13,7 @@ tab-separated-values file (some_folder_name/log.txt)
 
 """
 
-import os.path as osp, shutil, time, atexit, os, subprocess
+import os.path as osp, time, atexit, os
 
 color2num = dict(
     gray=30,
@@ -27,6 +27,7 @@ color2num = dict(
     crimson=38
 )
 
+
 def colorize(string, color, bold=False, highlight=False):
     attr = []
     num = color2num[color]
@@ -35,12 +36,14 @@ def colorize(string, color, bold=False, highlight=False):
     if bold: attr.append('1')
     return '\x1b[%sm%s\x1b[0m' % (';'.join(attr), string)
 
+
 class G(object):
     output_dir = None
     output_file = None
     first_row = True
     log_headers = []
     log_current_row = {}
+
 
 def configure_output_dir(d=None):
     """
@@ -49,13 +52,14 @@ def configure_output_dir(d=None):
     G.first_row = True
     G.log_headers = []
     G.log_current_row = {}
-    
+
     G.output_dir = d or "/tmp/experiments/%i"%int(time.time())
     if not osp.exists(G.output_dir):
         os.makedirs(G.output_dir)
     G.output_file = open(osp.join(G.output_dir, "log.txt"), 'w')
     atexit.register(G.output_file.close)
     print(colorize("Logging data to %s"%G.output_file.name, 'green', bold=True))
+
 
 def log_tabular(key, val):
     """
@@ -69,7 +73,7 @@ def log_tabular(key, val):
     assert key not in G.log_current_row, "You already set %s this iteration. Maybe you forgot to call dump_tabular()"%key
     G.log_current_row[key] = val
 
-    
+
 def save_params(params):
     with open(osp.join(G.output_dir, "params.json"), 'w') as out:
         out.write(json.dumps(params, separators=(',\n','\t:\t'), sort_keys=True))

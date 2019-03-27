@@ -1,14 +1,13 @@
 # Code in this file is copied and adapted from
 # https://github.com/openai/evolution-strategies-starter.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import numpy as np
 
-# OPTIMIZERS FOR MINIMIZING OBJECTIVES
+
 class Optimizer(object):
+    """OPTIMIZERS FOR MINIMIZING OBJECTIVES"""
+
     def __init__(self, w_policy):
         self.w_policy = w_policy.flatten()
         self.dim = w_policy.size
