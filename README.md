@@ -9,7 +9,7 @@ Our ARS implementation relies on Python 3, OpenAI Gym version 0.9.3, mujoco-py 0
 To install OpenAI Gym and MuJoCo dependencies follow the instructions here:
 https://github.com/openai/gym
 
-To install Ray execute:
+To install Ray (only on Linux or MacOS) execute:
 ``` 
 pip install ray
 ```
@@ -24,10 +24,11 @@ ARS works amazingly at `MountainCarContinuous-v0`, but seems to learn very slowl
 First start Ray by executing a command of the following form:
 
 ```
-ray start --head --redis-port=6379 --num-workers=18
+ray start --head --redis-port=6379  --num-cpus=3
 ```
-This command starts multiple Python processes on one machine for parallel computations with Ray. 
-Set "num_workers=X" for parallelizing ARS across X CPUs.
+
+This command starts multiple Python processes on one machine for parallel computations with Ray, as well as a Redis server for synchronizing results. 
+Set "num-cpus=X" for parallelizing ARS across X CPUs.
 For parallelzing ARS on a cluster follow the instructions here: http://ray.readthedocs.io/en/latest/using-ray-on-a-large-cluster.html.
 
 We recommend using single threaded linear algebra computations by setting: 
@@ -41,6 +42,7 @@ To train a policy for HalfCheetah-v1, execute the following command:
 python arsrl/ars.py
 ```
 
+Only continuous observation and action environments is currently supported.
 All arguments passed into ARS are optional and can be modified to train other environments, use different hyperparameters, or use  different random seeds.
 For example, to train a policy for Humanoid-v1, execute the following command:
 

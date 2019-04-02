@@ -25,7 +25,6 @@ class Policy(object):
 
     def update_weights(self, new_weights):
         self.weights[:] = new_weights[:]
-        return
 
     def get_weights(self):
         return self.weights
@@ -47,15 +46,13 @@ class LinearPolicy(Policy):
 
     def __init__(self, policy_params):
         Policy.__init__(self, policy_params)
-        self.weights = np.zeros((self.ac_dim, self.ob_dim), dtype = np.float64)
+        self.weights = np.zeros((self.ac_dim, self.ob_dim), dtype=np.float64)
 
     def act(self, ob):
         ob = self.observation_filter(ob, update=self.update_filter)
         return np.dot(self.weights, ob)
 
     def get_weights_plus_stats(self):
-
         mu, std = self.observation_filter.get_stats()
         aux = np.asarray([self.weights, mu, std])
         return aux
-

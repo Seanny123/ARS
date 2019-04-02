@@ -51,7 +51,8 @@ def main():
             steps += 1
             if args.render:
                 env.render()
-            if steps % 100 == 0: print("%i/%i"%(steps, env.spec.timestep_limit))
+            if steps % 100 == 0:
+                print(f"{steps}/{env.spec.timestep_limit}")
             if steps >= env.spec.timestep_limit:
                 break
         returns.append(totalr)
