@@ -107,12 +107,14 @@ class Worker(object):
 
         ob = self.env.reset()
         for i in range(rollout_length):
-            # my_f.write("{} \n".format(ob[20]))
+
+            if type(ob) is dict:
+                ob = np.concatenate(([ob["level"], ob["progress"]], ob["outflow"]))
 
             action = self.policy.act(ob)
             next_ob, reward, done, _ = self.env.step(action)
             if record_transitions:
-                transitions.append([ob, action, reward, next_ob])
+                transitions.append([ob, action, next_ob, reward])
 
             # Constraints for linear safety layer
             if next_ob[20] > 1:
@@ -385,6 +387,7 @@ class ARSLearner(object):
         transitions = self.memory.sample(self.BATCH_SIZE)
         batch = Transition(*zip(*transitions))
 
+        print(f"batch.state: {batch.state}")
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
 
