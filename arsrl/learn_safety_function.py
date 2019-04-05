@@ -2,6 +2,7 @@ import os
 import time
 import numpy as np
 import gym
+import json
 import ray
 import socket
 
@@ -13,7 +14,7 @@ from arsrl.policies import LinearPolicy, SafeBilayerExplorerPolicy
 import torch
 import torch.nn.functional as F
 import random
-
+import darwinrl.simple_envs
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
@@ -55,7 +56,7 @@ class Worker(object):
                  deltas=None,
                  rollout_length=1000,
                  delta_std=0.02):
-
+        import darwinrl.simple_envs
         self.env_name = env_name
         self.env = gym.make(env_name)
         self.env.seed(env_seed)
@@ -207,16 +208,29 @@ class ARSLearner(object):
                  step_size=0.01,
                  shift='constant zero',
                  params=None,
-                 seed=123):
+                 seed=123,
+                 gym_kwargs=None):
 
         logz.configure_output_dir(logdir)
         logz.save_params(params)
 
-        env = gym.make(env_name)
+        if gym_kwargs is not None:
+            env = gym.make(env_name, **gym_kwargs)
+        else:
+            env = gym.make(env_name)
 
         self.timesteps = 0
         self.action_size = env.action_space.shape[0]
-        self.ob_size = env.observation_space.shape[0]
+
+        if env.observation_space.shape is not None:
+            self.ob_size = env.observation_space.shape[0]
+        elif type(env.observation_space) is gym.spaces.Dict:
+            self.ob_size = 0
+            for val in env.observation_space.spaces.values():
+                self.ob_size += val.shape[0]
+        else:
+            raise NotImplementedError("What space is this?")
+
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
         self.rollout_length = rollout_length
@@ -470,11 +484,26 @@ def run_ars(params):
     if not (os.path.exists(logdir)):
         os.makedirs(logdir)
 
-    env = gym.make(params['env_name'])
-    ob_dim = env.observation_space.shape[0]
+    if params["config_file"] == "":
+        gym_kwargs = None
+        env = gym.make(params['env_name'])
+    else:
+        with open(params["config_file"], "r") as fi:
+            gym_kwargs = json.load(fi)
+
+        env = gym.make(params['env_name'], **gym_kwargs)
+
+    if env.observation_space.shape is not None:
+        ob_dim = env.observation_space.shape[0]
+    elif type(env.observation_space) is gym.spaces.Dict:
+        ob_dim = 0
+        for val in env.observation_space.spaces.values():
+            ob_dim += val.shape[0]
+    else:
+        raise NotImplementedError("What space is this?")
+
     ac_dim = env.action_space.shape[0]
-    print(f"ob_dim: {ob_dim}")
-    print(f"ac_dim: {ac_dim}")
+
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
     policy_params = {'type': 'bilayer_safe_explorer',
                      'ob_filter': params['filter'],
@@ -492,7 +521,8 @@ def run_ars(params):
                      rollout_length=params['rollout_length'],
                      shift=params['shift'],
                      params=params,
-                     seed=params['seed'])
+                     seed=params['seed'],
+                     gym_kwargs=gym_kwargs)
 
     ARS.train(params['n_iter'])
 
@@ -518,6 +548,7 @@ if __name__ == '__main__':
     parser.add_argument('--policy_type', type=str, default='linear')
     parser.add_argument('--dir_path', type=str, default='trained_policies/waterenv')
     parser.add_argument('--logdir', type=str, default='trained_policies/waterenv')
+    parser.add_argument('--config_file', type=str, default='')
 
     # for ARS V1 use filter = 'NoFilter'
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
