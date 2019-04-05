@@ -1,23 +1,45 @@
-'''
-Parallel implementation of the Augmented Random Search method.
-Horia Mania --- hmania@berkeley.edu
-Aurelia Guy
-Benjamin Recht
-'''
-
 import os
-import socket
 import time
-import json
-
-import gym
 import numpy as np
+import gym
 import ray
-import darwinrl.simple_envs
+import socket
 
-from arsrl import utils, logz, optimizers
+from arsrl import logz, utils, optimizers
 from arsrl.policies import LinearPolicy, SafeBilayerExplorerPolicy
 from arsrl.shared_noise import SharedNoiseTable, create_shared_noise
+from collections import namedtuple
+
+import torch
+import random
+
+
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class ReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, *args):
+        """Saves a transition."""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
 
 
 @ray.remote
@@ -31,15 +53,10 @@ class Worker(object):
                  policy_params=None,
                  deltas=None,
                  rollout_length=1000,
-                 delta_std=0.02,
-                 gym_kwargs=None):
+                 delta_std=0.02):
 
-        # initialize OpenAI environment for each worker
-        if gym_kwargs is not None:
-            self.env = gym.make(env_name, **gym_kwargs)
-        else:
-            self.env = gym.make(env_name)
-
+        self.env_name = env_name
+        self.env = gym.make(env_name)
         self.env.seed(env_seed)
 
         # each worker gets access to the shared noise table
@@ -50,19 +67,27 @@ class Worker(object):
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
         elif policy_params['type'] == 'bilayer_safe_explorer':
-            self.policy = SafeBilayerExplorerPolicy(policy_params)
-            self.w_policy = self.policy.get_weights()
+            self.policy = SafeBilayerExplorerPolicy(policy_params,
+                                                    trained_weights='!/trained_policies/safeQ_torch119.pt')
+
         else:
             raise NotImplementedError
 
         self.delta_std = delta_std
         self.rollout_length = rollout_length
 
+    def __str__(self):
+        return "Env_NAME:{} policy_params:{}".format(self.env_name, self.policy_params)
+
+    def __repr__(self):
+        return "Env_NAME:{} policy_params:{}".format(self.env_name, self.policy_params)
+
     def get_weights_plus_stats(self):
         """
         Get current policy weights and current statistics of past states.
         """
-        #assert self.policy_params['type'] == 'linear'
+        assert (self.policy_params['type'] == 'bilayer' or self.policy_params['type'] == 'linear' or self.policy_params[
+            'type'] == 'bilayer_safe_explorer')
         return self.policy.get_weights_plus_stats()
 
     def rollout(self, shift=0., rollout_length=None):
@@ -76,34 +101,53 @@ class Worker(object):
 
         total_reward = 0.
         steps = 0
-
+        my_f = open('Violations.txt', 'a')
+        transitions = []
         ob = self.env.reset()
-
         for i in range(rollout_length):
-            if type(ob) is dict:
-                ob = np.concatenate(([ob["level"], ob["progress"]], ob["outflow"]))
 
+            weights = self.policy.getQ(ob)
             action = self.policy.act(ob)
-            ob, reward, done, _ = self.env.step(action)
+            C = 0.8
+            # Solve the lagrangian
+            # TODO: okay, but why this hard coded 20?
+            lagrangian = max(float(np.sum(weights * action) + ob[20] - C) / (np.sum(weights ** 2)), 0)
+            a_star = action - lagrangian * weights
+            next_ob, reward, done, _ = self.env.step(a_star)
+            cost = float(np.sum(weights * action)) + ob[20]
+            if (ob[20] > 1):
+                my_f.write("Violated: \n")
+                my_f.write("Obs: {} \n".format(ob))
+                my_f.write("action given: {} \n".format(action))
+                my_f.write("action taken: {} \n".format(a_star))
+                my_f.write("cost: {} \n".format(cost))
+                my_f.write("weights: {} \n".format(weights))
+                my_f.write("---------------\n")
 
             steps += 1
             total_reward += (reward - shift)
+            ob = next_ob
             if done:
                 break
 
-        return total_reward, steps
+        return total_reward, steps, transitions
+
+    def linesearch(self, delta, backtrack_ratio=0.5, num_backtracks=10):
+        deltas = [delta]
+        return deltas
 
     def do_rollouts(self, w_policy, num_rollouts=1, shift=1, evaluate=False):
         """
         Generate multiple rollouts with a policy parametrized by w_policy.
         """
-
+        all_transitions = []
         rollout_rewards, deltas_idx = [], []
         steps = 0
 
         for i in range(num_rollouts):
 
             if evaluate:
+                print("EVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL")
                 self.policy.update_weights(w_policy)
                 deltas_idx.append(-1)
 
@@ -112,7 +156,7 @@ class Worker(object):
 
                 # for evaluation we do not shift the rewards (shift = 0) and we use the
                 # default rollout length (1000 for the MuJoCo locomotion tasks)
-                reward, r_steps = self.rollout(shift=0., rollout_length=self.env.spec.timestep_limit)
+                reward, r_steps, transitions = self.rollout(shift=0., rollout_length=self.env.spec.timestep_limit)
                 rollout_rewards.append(reward)
 
             else:
@@ -126,19 +170,22 @@ class Worker(object):
 
                 # compute reward and number of timesteps used for positive perturbation rollout
                 self.policy.update_weights(w_policy + delta)
-                pos_reward, pos_steps = self.rollout(shift=shift)
+                pos_reward, pos_steps, transitions = self.rollout(shift=shift)
+                all_transitions = all_transitions + transitions
 
                 # compute reward and number of timesteps used for negative pertubation rollout
                 self.policy.update_weights(w_policy - delta)
-                neg_reward, neg_steps = self.rollout(shift=shift)
+                neg_reward, neg_steps, transitions = self.rollout(shift=shift)
                 steps += pos_steps + neg_steps
-
+                all_transitions = all_transitions + transitions
                 rollout_rewards.append([pos_reward, neg_reward])
 
-        return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps": steps}
+        return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps": steps,
+                "transitions": all_transitions}
 
     def stats_increment(self):
         self.policy.observation_filter.stats_increment()
+        return
 
     def get_weights(self):
         return self.policy.get_weights()
@@ -148,6 +195,7 @@ class Worker(object):
 
     def sync_filter(self, other):
         self.policy.observation_filter.sync(other)
+        return
 
 
 class ARSLearner(object):
@@ -155,7 +203,7 @@ class ARSLearner(object):
     Object class implementing the ARS algorithm.
     """
 
-    def __init__(self, env_name='MountainCarContinuous-v0',
+    def __init__(self, env_name='HalfCheetah-v1',
                  policy_params=None,
                  num_workers=32,
                  num_deltas=320,
@@ -166,30 +214,16 @@ class ARSLearner(object):
                  step_size=0.01,
                  shift='constant zero',
                  params=None,
-                 seed=123,
-                 gym_kwargs=None):
+                 seed=123):
 
         logz.configure_output_dir(logdir)
         logz.save_params(params)
 
-        if gym_kwargs is not None:
-            env = gym.make(env_name, **gym_kwargs)
-        else:
-            env = gym.make(env_name)
+        env = gym.make(env_name)
 
         self.timesteps = 0
         self.action_size = env.action_space.shape[0]
-
-        if env.observation_space.shape is not None:
-            self.ob_size = env.observation_space.shape[0]
-        elif type(env.observation_space) is gym.spaces.Dict:
-            self.ob_size = 0
-            for val in env.observation_space.spaces.values():
-                self.ob_size += val.shape[0]
-        else:
-            raise NotImplementedError("What space is this?")
-
-        self.best_mean = -np.Inf
+        self.ob_size = env.observation_space.shape[0]
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
         self.rollout_length = rollout_length
@@ -200,6 +234,12 @@ class ARSLearner(object):
         self.params = params
         self.max_past_avg_reward = float('-inf')
         self.num_episodes_used = float('inf')
+
+        # Parameters for Q Learner
+        self.memory = ReplayMemory(10000)
+        self.BATCH_SIZE = 128
+        self.GAMMA = 0.999
+        self.TARGET_UPDATE = 5
 
         # create shared table for storing noise
         print("Creating deltas table.")
@@ -215,15 +255,17 @@ class ARSLearner(object):
                                       policy_params=policy_params,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
-                                      delta_std=delta_std,
-                                      gym_kwargs=gym_kwargs) for i in range(num_workers)]
+                                      delta_std=delta_std) for i in range(num_workers)]
 
+        print(self.workers[0])
         # initialize policy
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
             self.w_policy = self.policy.get_weights()
         elif policy_params['type'] == 'bilayer_safe_explorer':
-            self.policy = SafeBilayerExplorerPolicy(policy_params)
+            # TODO: have to change the path
+            self.policy = SafeBilayerExplorerPolicy(policy_params,
+                                                    trained_weights='~/ARS/trained_policies/safeQ_torch119.pt')
             self.w_policy = self.policy.get_weights()
         else:
             raise NotImplementedError
@@ -265,21 +307,31 @@ class ARSLearner(object):
         results_two = ray.get(rollout_ids_two)
 
         rollout_rewards, deltas_idx = [], []
+        all_transitions = []
 
         for result in results_one:
             if not evaluate:
                 self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
+            all_transitions += result['transitions']
 
         for result in results_two:
             if not evaluate:
                 self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
+            all_transitions += result['transitions']
 
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype=np.float64)
+
+        # Push all the transitions collected in the Replay Buffer
+        for tran in all_transitions:
+            self.memory.push(torch.from_numpy(tran[0]).unsqueeze(0).to(device).float(),
+                             torch.tensor([[tran[1]]], device=device, dtype=torch.long),
+                             torch.from_numpy(tran[3]).unsqueeze(0).float().to(device),
+                             torch.tensor([tran[2]], device=device))
 
         print('Maximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -289,17 +341,19 @@ class ARSLearner(object):
         if evaluate:
             return rollout_rewards
 
+        # select top performing directions if deltas_used < num_deltas
         max_rewards = np.max(rollout_rewards, axis=1)
         if self.deltas_used > self.num_deltas:
             self.deltas_used = self.num_deltas
 
-        percentile_idx = max_rewards >= np.percentile(max_rewards, 100 * (1 - (self.deltas_used / self.num_deltas)))
-        idx = np.arange(max_rewards.size)[percentile_idx]
+        idx = np.arange(max_rewards.size)[
+            max_rewards >= np.percentile(max_rewards, 100 * (1 - (self.deltas_used / self.num_deltas)))]
         deltas_idx = deltas_idx[idx]
         rollout_rewards = rollout_rewards[idx, :]
 
         # normalize rewards by their standard deviation
-        rollout_rewards /= np.std(rollout_rewards)
+        if np.std(rollout_rewards) != 0:
+            rollout_rewards /= np.std(rollout_rewards)
 
         t1 = time.time()
         # aggregate rollouts to form g_hat, the gradient used to compute SGD step
@@ -317,37 +371,41 @@ class ARSLearner(object):
         Perform one update step of the policy weights.
         """
         g_hat = self.aggregate_rollouts()
-        print("Euclidean norm of update step:", np.linalg.norm(g_hat))  # TODO: this doesn't seem helpful?
+        print("Euclidean norm of update step:", np.linalg.norm(g_hat))
         self.w_policy -= self.optimizer._compute_step(g_hat).reshape(self.w_policy.shape)
+        self.policy.update_weights(self.w_policy)
+        return
 
     def train(self, num_iter):
-
+        max_reward_ever = -1
         start = time.time()
         for i in range(num_iter):
 
             t1 = time.time()
             self.train_step()
+
             t2 = time.time()
             print('total time of one step', t2 - t1)
             print('iter ', i, ' done')
 
-            # record statistics every 10 iterations
             if (i + 1) % 10 == 0:
-                rewards = self.aggregate_rollouts(num_rollouts=100, evaluate=True)
+
+                rewards = self.aggregate_rollouts(num_rollouts=30, evaluate=True)
+                print("SHAPE", rewards.shape)
+                if np.mean(rewards) > max_reward_ever:
+                    max_reward_ever = np.mean(rewards)
+
                 w = ray.get(self.workers[0].get_weights_plus_stats.remote())
-                
-                mean_rewards = np.mean(rewards)
 
-                if mean_rewards > self.best_mean:
-                    np.savez(os.path.join(self.logdir, "lin_policy_mean"), w)
-                    self.best_mean = mean_rewards
-
-                np.savez(os.path.join(self.logdir, "lin_policy_plus"), w)
+                np.savez(self.logdir + "/bi_policy_num_plus" + str(i), w)
+                torch.save(self.policy.net.state_dict(), self.logdir + "/bi_policy_num_plus_torch" + str(i) + ".pt")
+                torch.save(self.policy.safeQ.state_dict(), self.logdir + "/safeQ_torch" + str(i) + ".pt")
 
                 print(sorted(self.params.items()))
                 logz.log_tabular("Time", time.time() - start)
                 logz.log_tabular("Iteration", i + 1)
-                logz.log_tabular("AverageReward", mean_rewards)
+                logz.log_tabular("BestRewardEver", max_reward_ever)
+                logz.log_tabular("AverageReward", np.mean(rewards))
                 logz.log_tabular("StdRewards", np.std(rewards))
                 logz.log_tabular("MaxRewardRollout", np.max(rewards))
                 logz.log_tabular("MinRewardRollout", np.min(rewards))
@@ -374,43 +432,28 @@ class ARSLearner(object):
             t2 = time.time()
             print('Time to sync statistics:', t2 - t1)
 
+        return
+
 
 def run_ars(params):
-
     dir_path = params['dir_path']
 
-    if not(os.path.exists(dir_path)):
+    if not (os.path.exists(dir_path)):
         os.makedirs(dir_path)
     logdir = dir_path
-    if not(os.path.exists(logdir)):
+    if not (os.path.exists(logdir)):
         os.makedirs(logdir)
-    
-    if params["config_file"] == "":
-        gym_kwargs = None
-        env = gym.make(params['env_name'])
-    else:
-        with open(params["config_file"], "r") as fi:
-            gym_kwargs = json.load(fi)
 
-        env = gym.make(params['env_name'], **gym_kwargs)
-
-    if env.observation_space.shape is not None:
-        ob_dim = env.observation_space.shape[0]
-    elif type(env.observation_space) is gym.spaces.Dict:
-        ob_dim = 0
-        for val in env.observation_space.spaces.values():
-            ob_dim += val.shape[0]
-    else:
-        raise NotImplementedError("What space is this?")
-
+    env = gym.make(params['env_name'])
+    ob_dim = env.observation_space.shape[0]
     ac_dim = env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
-    policy_params = {'type': 'linear',
+    policy_params = {'type': 'bilayer_safe_explorer',
                      'ob_filter': params['filter'],
                      'ob_dim': ob_dim,
                      'ac_dim': ac_dim}
-    
+
     ARS = ARSLearner(env_name=params['env_name'],
                      policy_params=policy_params,
                      num_workers=params['n_workers'],
@@ -422,38 +465,40 @@ def run_ars(params):
                      rollout_length=params['rollout_length'],
                      shift=params['shift'],
                      params=params,
-                     seed=params['seed'],
-                     gym_kwargs=gym_kwargs)
+                     seed=params['seed'])
 
     ARS.train(params['n_iter'])
+
+    return
 
 
 if __name__ == '__main__':
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', type=str, default='MountainCarContinuous-v0')
+    parser.add_argument('--env_name', type=str, default='Madras-v0')
     parser.add_argument('--n_iter', '-n', type=int, default=1000)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
-    parser.add_argument('--n_workers', '-e', type=int, default=18)
-    parser.add_argument('--rollout_length', '-r', type=int, default=1000)
+    parser.add_argument('--n_workers', '-e', type=int, default=6)
+    parser.add_argument('--rollout_length', '-r', type=int, default=5000)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1
     # for Humanoid-v1 used shift = 5
-    parser.add_argument('--shift', type=float, default=0)
+    parser.add_argument('--shift', type=float, default=1)
     parser.add_argument('--seed', type=int, default=237)
     parser.add_argument('--policy_type', type=str, default='linear')
-    parser.add_argument('--dir_path', type=str, default='data')
-    parser.add_argument('--config_file', type=str, default='')
+    parser.add_argument('--dir_path', type=str, default='trained_policies/Madras-explore8')
+    parser.add_argument('--logdir', type=str, default='trained_policies/Madras-explore8')
 
     # for ARS V1 use filter = 'NoFilter'
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
 
-    #local_ip = socket.gethostbyname(socket.gethostname())
-    ray.init(redis_address='127.0.0.1:6379')
+    local_ip = socket.gethostbyname(socket.gethostname())
+    ray.init(redis_address="10.32.6.37:6382")
 
     args = parser.parse_args()
     params = vars(args)
