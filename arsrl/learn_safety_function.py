@@ -495,7 +495,7 @@ def run_ars(params):
 
     if env.observation_space.shape is not None:
         ob_dim = env.observation_space.shape[0]
-    elif type(env.observation_space) is gym.spaces.Dict:
+    elif isinstance(env.observation_space, gym.spaces.Dict):
         ob_dim = 0
         for val in env.observation_space.spaces.values():
             ob_dim += val.shape[0]
@@ -504,6 +504,8 @@ def run_ars(params):
 
     ac_dim = env.action_space.shape[0]
 
+    print(f"ob_dim: {ob_dim}")
+    print(f"ac_dim: {ac_dim}")
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
     policy_params = {'type': 'bilayer_safe_explorer',
                      'ob_filter': params['filter'],
@@ -532,13 +534,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='Madras-v0')
-    parser.add_argument('--n_iter', '-n', type=int, default=1000)
+    parser.add_argument('--n_iter', '-n', type=int, default=10)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
-    parser.add_argument('--n_workers', '-e', type=int, default=6)
-    parser.add_argument('--rollout_length', '-r', type=int, default=5000)
+    parser.add_argument('--n_workers', '-e', type=int, default=1)
+    parser.add_argument('--rollout_length', '-r', type=int, default=1000)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1
