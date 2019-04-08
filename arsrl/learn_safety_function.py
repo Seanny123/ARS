@@ -121,7 +121,7 @@ class Worker(object):
             next_ob, reward, done, _ = self.env.step(action)
 
             # Constraints for linear safety layer
-            if action[0] < 0 or sum(next_ob["outflow"] > 0) != len(next_ob["outflow"]):
+            if action[0] < 0 or next_ob["level"] < 0.01:
                 record_transitions = False
 
             if record_transitions:
@@ -396,35 +396,30 @@ class ARSLearner(object):
         state_batch = torch.cat(policy_obs).view(len(transitions), -1).to(device).float()
 
         policy_action = torch.from_numpy(np.array([a_tran.action for a_tran in transitions]))
-        batch = Transition(*zip(*transitions))
-
-        policy_ns = [np.concatenate((np.array([a_tran.next_state["level"]]),
-                                     np.array([a_tran.next_state["progress"]]),
-                                     np.array(a_tran.next_state["outflow"]))) for a_tran in transitions]
-        policy_ns = [torch.from_numpy(an_obs) for an_obs in policy_ns]
-        next_state_np = torch.cat(policy_ns)
 
         # set up the costs for constraints
         # TODO: more hardcoded index?
-        # next_state_np = next_state_np.reshape(next_state_np.shape[0], -1)
-        cost_next_state = np.array([a_tran.next_state["level"] for a_tran in transitions])
+        cost_next_state = torch.from_numpy(np.array([a_tran.next_state["level"] for a_tran in transitions]))
 
-        # state_np = state_np.reshape(state_np.shape[0], -1)
-        # action_np = action_np.reshape(action_np.shape[0], -1)
-        cost_state = np.array([a_tran.state["level"] for a_tran in transitions])
+        cost_state = torch.from_numpy(np.array([a_tran.state["level"] for a_tran in transitions]))
 
+        # state_batch size of (b, obs_dim)
+        # action size of (b, act_dim)
         transpose_action = self.policy.safeQ(state_batch)
+        transpose_action = transpose_action.unsqueeze(-1)
 
-        mul = torch.mul(transpose_action, policy_action.to(device).float())
-        mul = torch.sum(mul, dim=1)
+        policy_action = torch.reshape(policy_action, transpose_action.size()).to(device)
 
-        target = torch.from_numpy(cost_state).to(device).float() + mul
+        mul = torch.bmm(transpose_action.float(), policy_action.float())
+        cost_state = torch.reshape(cost_state, mul.size()).to(device).float()
+        target = cost_state + mul
 
-        loss = F.mse_loss(torch.from_numpy(cost_next_state).to(device).float(), target.view(1, -1))
+        cost_next_state = torch.reshape(cost_next_state, target.size()).to(device).float()
+
+        loss = F.mse_loss(cost_next_state, target)
 
         self.policy.optimizer.zero_grad()
         loss.backward()
-
         self.policy.optimizer.step()
 
     def train(self, num_iter):
@@ -446,11 +441,8 @@ class ARSLearner(object):
                 print("SHAPE", rewards.shape)
                 if np.mean(rewards) > max_reward_ever:
                     max_reward_ever = np.mean(rewards)
+#                w = ray.get(self.workers[0].get_weights_plus_stats.remote())
 
-                w = ray.get(self.workers[0].get_weights_plus_stats.remote())
-
-                np.savez(self.logdir + "/bi_policy_num_plus" + str(i), w)
-                torch.save(self.policy.net.state_dict(), self.logdir + "/bi_policy_num_plus_torch" + str(i) + ".pt")
                 torch.save(self.policy.safeQ.state_dict(), self.logdir + "/safeQ_torch" + str(i) + ".pt")
 
                 print(sorted(self.params.items()))
@@ -544,13 +536,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='Madras-v0')
-    parser.add_argument('--n_iter', '-n', type=int, default=1000)
+    parser.add_argument('--n_iter', '-n', type=int, default=3000)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
     parser.add_argument('--n_workers', '-e', type=int, default=10)
-    parser.add_argument('--rollout_length', '-r', type=int, default=1000)
+    parser.add_argument('--rollout_length', '-r', type=int, default=500)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1

@@ -74,7 +74,7 @@ class Worker(object):
             self.policy = LinearPolicy(policy_params)
         elif policy_params['type'] == 'bilayer_safe_explorer':
             self.policy = SafeBilayerExplorerPolicy(policy_params,
-                                                    trained_weights='trained_policies/waterenv/safeQ_torch789.pt')
+                                                    trained_weights='trained_policies/waterenv/safeQ_torch2549.pt')
 
         else:
             raise NotImplementedError
@@ -119,14 +119,14 @@ class Worker(object):
 
             weights = self.policy.getQ(policy_obs)
             action = self.policy.act(policy_obs)
-            C = 0.8
+            C = 0.008
             # Solve the lagrangian
             # TODO: okay, but why this hard coded 20?
             lagrangian = max(float(np.sum(weights * action) + ob["level"] - C) / (np.sum(weights ** 2)), 0)
             a_star = action - lagrangian * weights
             next_ob, reward, done, _ = self.env.step(a_star)
             cost = float(np.sum(weights * action)) + ob["level"]
-            if ob["level"] < 0:
+            if a_star < 0 or next_ob["level"] < 0:
                 my_f.write("Violated: \n")
                 my_f.write("Obs: {} \n".format(ob))
                 my_f.write("action given: {} \n".format(action))
@@ -290,7 +290,7 @@ class ARSLearner(object):
         elif policy_params['type'] == 'bilayer_safe_explorer':
             # TODO: have to change the path
             self.policy = SafeBilayerExplorerPolicy(policy_params,
-                                                    trained_weights='trained_policies/waterenv/safeQ_torch789.pt')
+                                                    trained_weights='trained_policies/waterenv/safeQ_torch2549.pt')
             self.w_policy = self.policy.get_weights()
         else:
             raise NotImplementedError
@@ -421,7 +421,6 @@ class ARSLearner(object):
 
                 np.savez(self.logdir + "/bi_policy_num_plus" + str(i), w)
                 torch.save(self.policy.net.state_dict(), self.logdir + "/bi_policy_num_plus_torch" + str(i) + ".pt")
-                torch.save(self.policy.safeQ.state_dict(), self.logdir + "/safeQ_torch" + str(i) + ".pt")
 
                 print(sorted(self.params.items()))
                 logz.log_tabular("Time", time.time() - start)
@@ -516,13 +515,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='Madras-v0')
-    parser.add_argument('--n_iter', '-n', type=int, default=1000)
+    parser.add_argument('--n_iter', '-n', type=int, default=3000)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
     parser.add_argument('--n_workers', '-e', type=int, default=10)
-    parser.add_argument('--rollout_length', '-r', type=int, default=1000)
+    parser.add_argument('--rollout_length', '-r', type=int, default=500)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1
