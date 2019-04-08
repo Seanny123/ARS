@@ -33,7 +33,7 @@ class Worker(object):
                  rollout_length=1000,
                  delta_std=0.02,
                  gym_kwargs=None):
-
+        import darwinrl.simple_envs
         # initialize OpenAI environment for each worker
         if gym_kwargs is not None:
             self.env = gym.make(env_name, **gym_kwargs)
@@ -432,7 +432,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='MountainCarContinuous-v0')
-    parser.add_argument('--n_iter', '-n', type=int, default=1000)
+    parser.add_argument('--n_iter', '-n', type=int, default=10)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)

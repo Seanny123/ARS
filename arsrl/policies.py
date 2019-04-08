@@ -106,7 +106,6 @@ class SafeBilayerExplorerPolicy(Policy):
             self.safeQ.to(device)
 
     def update_weights(self, new_weights):
-        print("UPDATE")
         vector_to_parameters(torch.tensor(new_weights), self.net.parameters())
         return
 

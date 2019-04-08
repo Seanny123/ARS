@@ -21,7 +21,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+print(f"using device: {device}")
 
 class ReplayMemory(object):
 
@@ -55,10 +55,15 @@ class Worker(object):
                  policy_params=None,
                  deltas=None,
                  rollout_length=1000,
-                 delta_std=0.02):
+                 delta_std=0.02,
+                 gym_kwargs=None):
+
         import darwinrl.simple_envs
         self.env_name = env_name
-        self.env = gym.make(env_name)
+        if gym_kwargs is not None:
+            self.env = gym.make(env_name, **gym_kwargs)
+        else:
+            self.env = gym.make(env_name)
         self.env.seed(env_seed)
 
         # each worker gets access to the shared noise table
@@ -70,7 +75,6 @@ class Worker(object):
             self.policy = LinearPolicy(policy_params)
         elif policy_params['type'] == 'bilayer_safe_explorer':
             self.policy = SafeBilayerExplorerPolicy(policy_params)
-
         else:
             raise NotImplementedError
 
@@ -109,16 +113,19 @@ class Worker(object):
         for i in range(rollout_length):
 
             if type(ob) is dict:
-                ob = np.concatenate(([ob["level"], ob["progress"]], ob["outflow"]))
+                policy_obs = np.concatenate(([ob["level"], ob["progress"]], ob["outflow"]))
+            else:
+                policy_obs = ob
 
-            action = self.policy.act(ob)
+            action = self.policy.act(policy_obs)
             next_ob, reward, done, _ = self.env.step(action)
-            if record_transitions:
-                transitions.append([ob, action, next_ob, reward])
 
             # Constraints for linear safety layer
-            if next_ob[20] > 1:
+            if action[0] < 0 or sum(next_ob["outflow"] > 0) != len(next_ob["outflow"]):
                 record_transitions = False
+
+            if record_transitions:
+                transitions.append([ob, action[0], next_ob, reward])
 
             steps += 1
             total_reward += (reward - shift)
@@ -143,7 +150,6 @@ class Worker(object):
         for i in range(num_rollouts):
 
             if evaluate:
-                print("EVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL")
                 self.policy.update_weights(w_policy)
                 deltas_idx.append(-1)
 
@@ -264,7 +270,8 @@ class ARSLearner(object):
                                       policy_params=policy_params,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
-                                      delta_std=delta_std) for i in range(num_workers)]
+                                      delta_std=delta_std,
+                                      gym_kwargs=gym_kwargs) for i in range(num_workers)]
 
         print(self.workers[0])
         # initialize policy
@@ -332,10 +339,7 @@ class ARSLearner(object):
 
         # Push all the transitions collected in the Replay Buffer
         for tran in all_transitions:
-            self.memory.push(torch.from_numpy(tran[0]).unsqueeze(0).to(device).float(),
-                             torch.tensor([[tran[1]]], device=device, dtype=torch.long),
-                             torch.from_numpy(tran[3]).unsqueeze(0).float().to(device),
-                             torch.tensor([tran[2]], device=device))
+            self.memory.push(tran[0], tran[1], tran[2], tran[3])
 
         print('Maximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -384,31 +388,35 @@ class ARSLearner(object):
         if len(self.memory) < self.BATCH_SIZE:
             return
 
+        print("IN UPDATE EXPLORER")
         transitions = self.memory.sample(self.BATCH_SIZE)
+        policy_obs = [np.concatenate((np.array([a_tran.state["level"]]),
+                                      np.array([a_tran.state["progress"]]),
+                                      np.array(a_tran.state["outflow"]))) for a_tran in transitions]
+        policy_obs = [torch.from_numpy(an_obs) for an_obs in policy_obs]
+        state_batch = torch.cat(policy_obs).view(len(transitions), -1).to(device).float()
+
+        policy_action = torch.from_numpy(np.array([a_tran.action for a_tran in transitions]))
         batch = Transition(*zip(*transitions))
 
-        print(f"batch.state: {batch.state}")
-        state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action)
-
-        # Convert to numpy arrays
-        state_np = np.asarray([i.cpu().numpy() for i in batch.state])
-        action_np = np.asarray([i.cpu().numpy().astype(np.float64) for i in batch.action])
-        next_state_np = np.asarray([i.cpu().numpy() for i in batch.next_state])
+        policy_ns = [np.concatenate((np.array([a_tran.next_state["level"]]),
+                                     np.array([a_tran.next_state["progress"]]),
+                                     np.array(a_tran.next_state["outflow"]))) for a_tran in transitions]
+        policy_ns = [torch.from_numpy(an_obs) for an_obs in policy_ns]
+        next_state_np = torch.cat(policy_ns)
 
         # set up the costs for constraints
         # TODO: more hardcoded index?
-        next_state_np = next_state_np.reshape(next_state_np.shape[0], -1)
-        print(f"shape of next_state_np: {next_state_np.shape}")
-        cost_next_state = np.asarray([i[20] for i in next_state_np])
+        # next_state_np = next_state_np.reshape(next_state_np.shape[0], -1)
+        cost_next_state = np.array([a_tran.next_state["level"] for a_tran in transitions])
 
-        state_np = state_np.reshape(state_np.shape[0], -1)
-        action_np = action_np.reshape(action_np.shape[0], -1)
-        cost_state = np.asarray([i[20] for i in state_np])
+        # state_np = state_np.reshape(state_np.shape[0], -1)
+        # action_np = action_np.reshape(action_np.shape[0], -1)
+        cost_state = np.array([a_tran.state["level"] for a_tran in transitions])
 
         transpose_action = self.policy.safeQ(state_batch)
 
-        mul = torch.mul(transpose_action, torch.from_numpy(action_np).to(device).float())
+        mul = torch.mul(transpose_action, policy_action.to(device).float())
         mul = torch.sum(mul, dim=1)
 
         target = torch.from_numpy(cost_state).to(device).float() + mul
@@ -559,7 +567,7 @@ if __name__ == '__main__':
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
 
     local_ip = socket.gethostbyname(socket.gethostname())
-    ray.init(redis_address="10.32.6.37:6382")
+    ray.init(redis_address="11.1.2.58:6379")
 
     args = parser.parse_args()
     params = vars(args)
