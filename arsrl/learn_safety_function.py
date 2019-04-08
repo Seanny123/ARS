@@ -388,7 +388,6 @@ class ARSLearner(object):
         if len(self.memory) < self.BATCH_SIZE:
             return
 
-        print("IN UPDATE EXPLORER")
         transitions = self.memory.sample(self.BATCH_SIZE)
         policy_obs = [np.concatenate((np.array([a_tran.state["level"]]),
                                       np.array([a_tran.state["progress"]]),
@@ -545,12 +544,12 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='Madras-v0')
-    parser.add_argument('--n_iter', '-n', type=int, default=10)
+    parser.add_argument('--n_iter', '-n', type=int, default=1000)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
-    parser.add_argument('--n_workers', '-e', type=int, default=1)
+    parser.add_argument('--n_workers', '-e', type=int, default=10)
     parser.add_argument('--rollout_length', '-r', type=int, default=1000)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0

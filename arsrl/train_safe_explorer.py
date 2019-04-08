@@ -1,15 +1,17 @@
 import os
 import time
+import json
 import numpy as np
 import gym
 import ray
 import socket
 
 from arsrl import logz, utils, optimizers
-from arsrl.policies import LinearPolicy, SafeBilayerExplorerPolicy
+from arsrl.policies import LinearPolicy, SafeBilayerExplorerPolicy, device
 from arsrl.shared_noise import SharedNoiseTable, create_shared_noise
 from collections import namedtuple
 
+import darwinrl.simple_envs
 import torch
 import random
 
@@ -18,7 +20,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 class ReplayMemory(object):
@@ -53,10 +55,14 @@ class Worker(object):
                  policy_params=None,
                  deltas=None,
                  rollout_length=1000,
-                 delta_std=0.02):
-
+                 delta_std=0.02,
+                 gym_kwargs=None):
+        import darwinrl.simple_envs
         self.env_name = env_name
-        self.env = gym.make(env_name)
+        if gym_kwargs is not None:
+            self.env = gym.make(env_name, **gym_kwargs)
+        else:
+            self.env = gym.make(env_name)
         self.env.seed(env_seed)
 
         # each worker gets access to the shared noise table
@@ -68,7 +74,7 @@ class Worker(object):
             self.policy = LinearPolicy(policy_params)
         elif policy_params['type'] == 'bilayer_safe_explorer':
             self.policy = SafeBilayerExplorerPolicy(policy_params,
-                                                    trained_weights='!/trained_policies/safeQ_torch119.pt')
+                                                    trained_weights='trained_policies/waterenv/safeQ_torch789.pt')
 
         else:
             raise NotImplementedError
@@ -106,16 +112,21 @@ class Worker(object):
         ob = self.env.reset()
         for i in range(rollout_length):
 
-            weights = self.policy.getQ(ob)
-            action = self.policy.act(ob)
+            if type(ob) is dict:
+                policy_obs = np.concatenate(([ob["level"], ob["progress"]], ob["outflow"]))
+            else:
+                policy_obs = ob
+
+            weights = self.policy.getQ(policy_obs)
+            action = self.policy.act(policy_obs)
             C = 0.8
             # Solve the lagrangian
             # TODO: okay, but why this hard coded 20?
-            lagrangian = max(float(np.sum(weights * action) + ob[20] - C) / (np.sum(weights ** 2)), 0)
+            lagrangian = max(float(np.sum(weights * action) + ob["level"] - C) / (np.sum(weights ** 2)), 0)
             a_star = action - lagrangian * weights
             next_ob, reward, done, _ = self.env.step(a_star)
-            cost = float(np.sum(weights * action)) + ob[20]
-            if (ob[20] > 1):
+            cost = float(np.sum(weights * action)) + ob["level"]
+            if ob["level"] < 0:
                 my_f.write("Violated: \n")
                 my_f.write("Obs: {} \n".format(ob))
                 my_f.write("action given: {} \n".format(action))
@@ -147,7 +158,6 @@ class Worker(object):
         for i in range(num_rollouts):
 
             if evaluate:
-                print("EVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL")
                 self.policy.update_weights(w_policy)
                 deltas_idx.append(-1)
 
@@ -214,16 +224,30 @@ class ARSLearner(object):
                  step_size=0.01,
                  shift='constant zero',
                  params=None,
-                 seed=123):
+                 seed=123,
+                 gym_kwargs=None):
 
         logz.configure_output_dir(logdir)
         logz.save_params(params)
 
-        env = gym.make(env_name)
+        if gym_kwargs is not None:
+            env = gym.make(env_name, **gym_kwargs)
+        else:
+            env = gym.make(env_name)
+
 
         self.timesteps = 0
         self.action_size = env.action_space.shape[0]
-        self.ob_size = env.observation_space.shape[0]
+
+        if env.observation_space.shape is not None:
+            self.ob_size = env.observation_space.shape[0]
+        elif type(env.observation_space) is gym.spaces.Dict:
+            self.ob_size = 0
+            for val in env.observation_space.spaces.values():
+                self.ob_size += val.shape[0]
+        else:
+            raise NotImplementedError("What space is this?")
+
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
         self.rollout_length = rollout_length
@@ -255,7 +279,8 @@ class ARSLearner(object):
                                       policy_params=policy_params,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
-                                      delta_std=delta_std) for i in range(num_workers)]
+                                      delta_std=delta_std,
+                                      gym_kwargs=gym_kwargs) for i in range(num_workers)]
 
         print(self.workers[0])
         # initialize policy
@@ -265,7 +290,7 @@ class ARSLearner(object):
         elif policy_params['type'] == 'bilayer_safe_explorer':
             # TODO: have to change the path
             self.policy = SafeBilayerExplorerPolicy(policy_params,
-                                                    trained_weights='~/ARS/trained_policies/safeQ_torch119.pt')
+                                                    trained_weights='trained_policies/waterenv/safeQ_torch789.pt')
             self.w_policy = self.policy.get_weights()
         else:
             raise NotImplementedError
@@ -328,10 +353,7 @@ class ARSLearner(object):
 
         # Push all the transitions collected in the Replay Buffer
         for tran in all_transitions:
-            self.memory.push(torch.from_numpy(tran[0]).unsqueeze(0).to(device).float(),
-                             torch.tensor([[tran[1]]], device=device, dtype=torch.long),
-                             torch.from_numpy(tran[3]).unsqueeze(0).float().to(device),
-                             torch.tensor([tran[2]], device=device))
+            self.memory.push(tran[0], tran[1], tran[2], tran[3])
 
         print('Maximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -444,8 +466,24 @@ def run_ars(params):
     if not (os.path.exists(logdir)):
         os.makedirs(logdir)
 
-    env = gym.make(params['env_name'])
-    ob_dim = env.observation_space.shape[0]
+    if params["config_file"] == "":
+        gym_kwargs = None
+        env = gym.make(params['env_name'])
+    else:
+        with open(params["config_file"], "r") as fi:
+            gym_kwargs = json.load(fi)
+
+        env = gym.make(params['env_name'], **gym_kwargs)
+
+    if env.observation_space.shape is not None:
+        ob_dim = env.observation_space.shape[0]
+    elif isinstance(env.observation_space, gym.spaces.Dict):
+        ob_dim = 0
+        for val in env.observation_space.spaces.values():
+            ob_dim += val.shape[0]
+    else:
+        raise NotImplementedError("What space is this?")
+
     ac_dim = env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
@@ -465,7 +503,8 @@ def run_ars(params):
                      rollout_length=params['rollout_length'],
                      shift=params['shift'],
                      params=params,
-                     seed=params['seed'])
+                     seed=params['seed'],
+                     gym_kwargs=gym_kwargs)
 
     ARS.train(params['n_iter'])
 
@@ -482,8 +521,8 @@ if __name__ == '__main__':
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
     parser.add_argument('--step_size', '-s', type=float, default=0.02)
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
-    parser.add_argument('--n_workers', '-e', type=int, default=6)
-    parser.add_argument('--rollout_length', '-r', type=int, default=5000)
+    parser.add_argument('--n_workers', '-e', type=int, default=10)
+    parser.add_argument('--rollout_length', '-r', type=int, default=1000)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1
@@ -491,14 +530,15 @@ if __name__ == '__main__':
     parser.add_argument('--shift', type=float, default=1)
     parser.add_argument('--seed', type=int, default=237)
     parser.add_argument('--policy_type', type=str, default='linear')
-    parser.add_argument('--dir_path', type=str, default='trained_policies/Madras-explore8')
-    parser.add_argument('--logdir', type=str, default='trained_policies/Madras-explore8')
+    parser.add_argument('--dir_path', type=str, default='trained_policies/waterenv')
+    parser.add_argument('--logdir', type=str, default='trained_policies/waterenv')
+    parser.add_argument('--config_file', type=str, default='')
 
     # for ARS V1 use filter = 'NoFilter'
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
 
     local_ip = socket.gethostbyname(socket.gethostname())
-    ray.init(redis_address="10.32.6.37:6382")
+    ray.init(redis_address="11.1.2.58:6379")
 
     args = parser.parse_args()
     params = vars(args)

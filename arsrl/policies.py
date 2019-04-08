@@ -102,7 +102,7 @@ class SafeBilayerExplorerPolicy(Policy):
 
         self.weights = parameters_to_vector(self.net.parameters()).detach().double().numpy()
         if trained_weights:
-            self.safeQ.load_state_dict(torch.load(trained_weights))
+            self.safeQ.load_state_dict(torch.load(trained_weights, map_location='cpu'))
             self.safeQ.to(device)
 
     def update_weights(self, new_weights):
